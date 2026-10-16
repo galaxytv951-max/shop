@@ -36,7 +36,8 @@
   const byId = new Map(products.map((p) => [String(p.id), p]));
   const deliveryById = new Map(deliveries.map((d) => [d.id, d]));
   const ALL = "Все";
-  const VIEWS = ["shop", "cart", "profile"];
+  const ORDER = ["shop", "cart", "profile", "product"]; // порядок = направление слайда
+  const TABS = ["shop", "cart", "profile"];
 
   const fmt = (n) => Number(n).toLocaleString("ru-RU");
   const cur = store.currency;
@@ -54,8 +55,21 @@
   };
   const persist = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch (_) {} };
 
+  const hasSizes = (p) => Array.isArray(p.sizes) && p.sizes.length > 0;
+  const covers = (p) => (p.images && p.images.length ? p.images : p.image ? [p.image] : []);
+
+  /* Строка корзины = товар + размер:  "4|M"  (без размера просто "4") */
+  const keyOf = (id, size) => (size ? `${id}|${size}` : String(id));
+  const parseKey = (k) => { const i = k.indexOf("|"); return i < 0 ? { id: k, size: "" } : { id: k.slice(0, i), size: k.slice(i + 1) }; };
+  const prodOf = (k) => byId.get(parseKey(k).id);
+
   let cart = load("shop_cart", {});
-  for (const id of Object.keys(cart)) if (!byId.has(id)) delete cart[id];
+  for (const k of Object.keys(cart)) {
+    const { id, size } = parseKey(k);
+    const p = byId.get(id);
+    const ok = p && (hasSizes(p) ? p.sizes.includes(size) : !size);
+    if (!ok) delete cart[k];
+  }
 
   let profile = load("shop_profile", { name: "", phone: "", address: "" });
   let orders = load("shop_orders", []);
@@ -70,13 +84,15 @@
 
   let category = ALL;
   let view = "shop";
-  let sheetId = null;
-  const scrollPos = { shop: 0, cart: 0, profile: 0 };
+  let backTo = "shop";
+  let pageId = null, pageSize = "";
+  const scrollPos = { shop: 0, cart: 0, profile: 0, product: 0 };
   const openOrders = new Set();
 
-  const qtyOf = (id) => cart[String(id)] || 0;
+  const qtyOf = (k) => cart[String(k)] || 0;
+  const productQty = (id) => Object.entries(cart).reduce((s, [k, q]) => s + (parseKey(k).id === String(id) ? q : 0), 0);
   const totalCount = () => Object.values(cart).reduce((a, b) => a + b, 0);
-  const itemsSum = () => Object.entries(cart).reduce((s, [id, q]) => s + byId.get(id).price * q, 0);
+  const itemsSum = () => Object.entries(cart).reduce((s, [k, q]) => s + prodOf(k).price * q, 0);
   const deliveryPrice = (sum = itemsSum()) => {
     const d = deliveryById.get(deliveryId);
     if (store.freeDeliveryFrom && sum >= store.freeDeliveryFrom) return 0;
@@ -91,36 +107,77 @@
   const grid = $("#grid"), chips = $("#chips"), chipsInd = $("#chips-ind");
   const cartList = $("#cart-list"), cartEmpty = $("#cart-empty"), checkoutBlock = $("#checkout-block");
   const deliveryBox = $("#delivery");
-  const dock = $("#dock"), badge = $("#badge");
-  const sheetWrap = $("#sheet-wrap"), sheet = $("#sheet"), sheetBody = $("#sheet-body");
+  const dock = $("#dock"), badge = $("#badge"), fabBadge = $("#fab-badge");
+  const ptop = $("#ptop"), pbar = $("#pbar");
   const toastEl = $("#toast");
   const ordersBox = $("#orders");
 
   $("#store-name").textContent = store.name;
   document.title = store.name;
-  if (tgUser && tgUser.first_name) $("#hello").textContent = `Привет, ${tgUser.first_name}`;
+
+  const greet = () => {
+    const h = new Date().getHours();
+    return h < 5 ? "Доброй ночи" : h < 12 ? "Доброе утро" : h < 18 ? "Добрый день" : "Добрый вечер";
+  };
+  $("#hello").textContent = greet() + (tgUser && tgUser.first_name ? `, ${tgUser.first_name}` : "");
 
   /* ---------- общие кирпичики ---------- */
-  const pic = (p, i = 0, cls = "") => `
-    <div class="pic ${cls}" style="--h:${Number(p.hue) || 260};--i:${i}">
-      ${p.image ? `<img src="${esc(p.image)}" alt="" loading="lazy">` : `<span class="emoji">${p.emoji || "📦"}</span>`}
-    </div>`;
-
-  const qtyControl = (id, size = "") => {
-    const q = qtyOf(id);
+  const pic = (p, i = 0, extra = "") => {
+    const src = covers(p)[0];
     return `
-      <div class="qty ${size} ${q ? "has" : ""}" data-qty="${id}">
-        <button class="minus" data-action="dec" data-id="${id}" aria-label="Убрать">−</button>
-        <span class="count">${q || ""}</span>
-        <button class="plus" data-action="inc" data-id="${id}" aria-label="Добавить">+${size ? '<span class="label">Добавить</span>' : ""}</button>
+      <div class="pic" style="--h:${Number(p.hue) || 260};--i:${i}">
+        ${extra}
+        ${src ? `<img src="${esc(src)}" alt="" loading="lazy" decoding="async">` : `<span class="emoji">${p.emoji || "📦"}</span>`}
       </div>`;
   };
+
+  const qtyControl = (key) => {
+    const q = qtyOf(key);
+    return `
+      <div class="qty ${q ? "has" : ""}" data-qty="${key}">
+        <button class="minus" data-action="dec" data-id="${key}" aria-label="Убрать">−</button>
+        <span class="count">${q || ""}</span>
+        <button class="plus" data-action="inc" data-id="${key}" aria-label="Добавить">+</button>
+      </div>`;
+  };
+
+  const discountOf = (p) => (p.oldPrice && p.oldPrice > p.price ? Math.round((1 - p.price / p.oldPrice) * 100) : 0);
 
   const moveInd = (ind, el) => {
     if (!el) return;
     ind.style.width = el.offsetWidth + "px";
     ind.style.transform = `translateX(${el.offsetLeft}px)`;
   };
+
+  // load не всплывает — ловим на фазе перехвата; фото плавно проявляются
+  document.addEventListener("load", (e) => {
+    if (e.target.tagName === "IMG") e.target.classList.add("loaded");
+  }, true);
+
+  /* ============================================================
+     Плавное появление карточек при прокрутке.
+     Бесконечные анимации (плавание, блик) крутятся только у тех,
+     что видны на экране — телефон не греется.
+     ============================================================ */
+  const revealIO = "IntersectionObserver" in window
+    ? new IntersectionObserver((entries) => {
+        let k = 0;
+        entries.forEach((e) => {
+          const el = e.target;
+          el.classList.toggle("vis", e.isIntersecting);
+          if (e.isIntersecting && !el.classList.contains("in")) {
+            el.style.transitionDelay = k++ * 70 + "ms";
+            el.classList.add("in");
+            setTimeout(() => { el.style.transitionDelay = ""; }, 1200);
+          }
+        });
+      }, { rootMargin: "0px 0px -4% 0px", threshold: 0.04 })
+    : null;
+
+  function observeCards() {
+    if (revealIO) { revealIO.disconnect(); $$(".rv", grid).forEach((el) => revealIO.observe(el)); }
+    else $$(".rv", grid).forEach((el) => el.classList.add("in", "vis"));
+  }
 
   /* ============================================================
      Витрина
@@ -140,38 +197,51 @@
     requestAnimationFrame(() => moveInd(chipsInd, $(".chip.active", chips)));
   }
 
+  function cardControl(p) {
+    // с размерами сразу в корзину нельзя — «+» открывает страницу выбора размера
+    return hasSizes(p)
+      ? `<div class="qty"><button class="plus" data-action="open" data-id="${p.id}" aria-label="Выбрать размер">+</button></div>`
+      : qtyControl(String(p.id));
+  }
+
   function renderGrid() {
     const list = category === ALL ? products : products.filter((p) => p.category === category);
-    grid.innerHTML = list.map((p, i) => `
-      <article class="card" data-action="open" data-id="${p.id}" style="--i:${i}">
-        ${pic(p, i)}
-        <div class="card-info">
-          <div class="card-cat">${esc(p.category || "")}</div>
-          <div class="card-name">${esc(p.name)}</div>
-          <div class="card-foot">
-            <span class="price">${money(p.price)}</span>
-            ${qtyControl(p.id)}
+    grid.innerHTML = list.map((p, i) => {
+      const d = discountOf(p);
+      const extra = (d ? `<span class="disc">−${d}%</span>` : "") + (hasSizes(p) ? `<span class="pbadge ${productQty(p.id) ? "show" : ""}" data-pbadge="${p.id}">${productQty(p.id) || ""}</span>` : "");
+      return `
+        <article class="card rv" data-action="open" data-id="${p.id}" style="--i:${i}">
+          ${pic(p, i, extra)}
+          <div class="card-info">
+            <div class="card-cat">${esc(p.category || "")}</div>
+            <div class="card-name">${esc(p.name)}</div>
+            <div class="card-foot">
+              <span class="price">${money(p.price)}</span>
+              ${cardControl(p)}
+            </div>
           </div>
-        </div>
-      </article>`).join("");
+        </article>`;
+    }).join("");
+    observeCards();
   }
 
   /* ============================================================
      Корзина
      ============================================================ */
   function renderCart() {
-    const ids = Object.keys(cart);
-    cartList.innerHTML = ids.map((id, i) => {
-      const p = byId.get(id), q = cart[id];
+    cartList.innerHTML = Object.keys(cart).map((key, i) => {
+      const { id, size } = parseKey(key);
+      const p = byId.get(id), q = cart[key];
       return `
-        <div class="row" data-row="${id}" style="--i:${i}">
-          ${pic(p, i)}
+        <div class="row" data-row="${key}" style="--i:${i}">
+          <div data-action="open" data-id="${id}">${pic(p, i)}</div>
           <div>
-            <div class="row-name">${esc(p.name)}</div>
+            <div class="row-name" data-action="open" data-id="${id}">${esc(p.name)}</div>
+            ${size ? `<span class="row-size">Размер ${esc(size)}</span>` : ""}
             <div class="row-price">${fmt(p.price)} ${cur}</div>
-            <div class="row-sum" data-rowsum="${id}">${fmt(p.price * q)} ${cur}</div>
+            <div class="row-sum" data-rowsum="${key}">${fmt(p.price * q)} ${cur}</div>
           </div>
-          ${qtyControl(id)}
+          ${qtyControl(key)}
         </div>`;
     }).join("");
     syncCartMeta();
@@ -216,7 +286,6 @@
     bump($("#sum-total"), `${fmt(sum + dp)} ${cur}`);
     $("#checkout-btn").textContent = n ? `Оформить заказ · ${fmt(sum + dp)} ${cur}` : "Оформить заказ";
 
-    // прогресс до бесплатной доставки
     const bar = $("#free-bar"), from = store.freeDeliveryFrom;
     if (from && n) {
       bar.hidden = false;
@@ -238,48 +307,188 @@
   /* ============================================================
      Количество
      ============================================================ */
-  function setQty(id, q) {
-    id = String(id);
-    if (q <= 0) delete cart[id]; else cart[id] = Math.min(q, 99);
+  function setQty(key, q) {
+    key = String(key);
+    if (q <= 0) delete cart[key]; else cart[key] = Math.min(q, 99);
     persist("shop_cart", cart);
-    syncUI(id);
+    syncUI(key);
   }
 
   function updateBadge() {
     const n = totalCount();
-    const prev = badge.textContent;
-    badge.textContent = n;
-    badge.classList.toggle("show", n > 0);
-    if (prev !== String(n)) { badge.classList.remove("pop"); void badge.offsetWidth; badge.classList.add("pop"); }
+    [badge, fabBadge].forEach((b) => {
+      const prev = b.textContent;
+      b.textContent = n;
+      b.classList.toggle("show", n > 0);
+      if (prev !== String(n)) { b.classList.remove("pop"); void b.offsetWidth; b.classList.add("pop"); }
+    });
   }
 
-  /* Обновляем «на месте» — анимации не обрываются */
-  function syncUI(id) {
-    const q = qtyOf(id);
+  const setCount = (el, q) => {
+    const c = $(".count", el);
+    const txt = q ? String(q) : "";
+    if (c.textContent !== txt) {
+      c.textContent = txt;
+      c.classList.remove("pop"); void c.offsetWidth; c.classList.add("pop");
+    }
+  };
 
-    $$(`[data-qty="${id}"]`).forEach((el) => {
+  /* Обновляем «на месте» — анимации не обрываются */
+  function syncUI(key) {
+    const q = qtyOf(key);
+    const { id } = parseKey(key);
+
+    $$(`[data-qty="${key}"]`).forEach((el) => {
       if (el.closest(".row") && q === 0) return; // строка корзины уезжает — не трогаем вид
       el.classList.toggle("has", q > 0);
-      const c = $(".count", el);
-      const txt = q ? String(q) : "";
-      if (c.textContent !== txt) {
-        c.textContent = txt;
-        c.classList.remove("pop"); void c.offsetWidth; c.classList.add("pop");
-      }
+      setCount(el, q);
     });
 
-    const row = $(`[data-row="${id}"]`);
+    const row = $(`[data-row="${key}"]`);
     if (row) {
       if (q === 0) {
         row.classList.add("removing");
         setTimeout(() => row.remove(), 560);
       } else {
-        $(`[data-rowsum="${id}"]`).textContent = `${fmt(byId.get(id).price * q)} ${cur}`;
+        $(`[data-rowsum="${key}"]`).textContent = `${fmt(prodOf(key).price * q)} ${cur}`;
       }
     }
 
+    const pb = $(`[data-pbadge="${id}"]`);
+    if (pb) {
+      const t = productQty(id);
+      pb.textContent = t || "";
+      pb.classList.toggle("show", t > 0);
+    }
+
+    pageSync();
     updateBadge();
     syncCartMeta(true);
+  }
+
+  /* ============================================================
+     Страница товара
+     ============================================================ */
+  const pageProduct = () => byId.get(String(pageId));
+  const pageKey = () => {
+    const p = pageProduct();
+    if (!p) return null;
+    return hasSizes(p) ? (pageSize ? keyOf(p.id, pageSize) : null) : String(p.id);
+  };
+
+  function pageSync() {
+    if (pageId == null) return;
+    const p = pageProduct(), key = pageKey(), q = key ? qtyOf(key) : 0;
+    const el = $("#pqty");
+    el.classList.toggle("has", q > 0);
+    setCount(el, q);
+    const info = $("#pinfo");
+    info.textContent = hasSizes(p) ? (pageSize ? `Размер ${pageSize}` : "Выберите размер") : (p.category || "");
+  }
+
+  function renderProduct(p) {
+    const h = Number(p.hue) || 260;
+    const e = p.emoji || "📦";
+    const imgs = covers(p);
+
+    const slides = imgs.length
+      ? imgs.map((src, i) => `<div class="slide" style="--h:${h}"><img src="${esc(src)}" alt="" decoding="async" ${i ? 'loading="lazy"' : ""}></div>`).join("")
+      : [
+          `<div class="slide" style="--h:${h}"><span class="emoji big" style="--r:0deg;--sc:1">${e}</span></div>`,
+          `<div class="slide" style="--h:${(h + 30) % 360}"><span class="emoji big" style="--r:16deg;--sc:1.45">${e}</span></div>`,
+          `<div class="slide" style="--h:${(h + 70) % 360}"><div class="pattern">${Array(30).fill(`<span>${e}</span>`).join("")}</div></div>`,
+        ].join("");
+
+    const gallery = $("#gallery");
+    gallery.innerHTML = slides;
+    gallery.scrollLeft = 0;
+
+    const count = gallery.children.length;
+    const dots = $("#dots");
+    dots.innerHTML = count > 1 ? Array.from({ length: count }, (_, i) => `<i class="${i ? "" : "on"}"></i>`).join("") : "";
+    let raf = 0;
+    gallery.onscroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const idx = Math.round(gallery.scrollLeft / gallery.clientWidth);
+        $$("i", dots).forEach((d, i) => d.classList.toggle("on", i === idx));
+      });
+    };
+
+    const d = discountOf(p);
+    const out = p.sizesOut || [];
+    const chart = p.sizeChart;
+
+    $("#pbody").innerHTML = `
+      <div class="p-in" style="--d:0"><div class="p-cat">${esc(p.category || "")}</div></div>
+      <h1 class="p-name p-in" style="--d:1">${esc(p.name)}</h1>
+      <div class="p-price-row p-in" style="--d:2">
+        <span class="p-price">${money(p.price)}</span>
+        ${d ? `<span class="p-old">${fmt(p.oldPrice)} ${cur}</span><span class="p-disc">−${d}%</span>` : ""}
+      </div>
+
+      ${hasSizes(p) ? `
+        <div class="p-in" style="--d:3">
+          <h3 class="sec-title"><span>Размер<b id="size-label"></b></span>${chart ? '<button class="link-btn" data-action="toggle-chart">Таблица размеров</button>' : ""}</h3>
+          <div class="sizes" id="sizes">
+            ${p.sizes.map((s) => `<button class="size ${out.includes(s) ? "out" : ""}" data-action="size" data-size="${esc(s)}">${esc(s)}</button>`).join("")}
+          </div>
+          ${chart ? `
+            <div class="chart-wrap" id="chart-wrap"><div>
+              <div class="chart" style="--n:${chart.head.length}">
+                <div class="chart-row h">${chart.head.map((x) => `<span>${esc(x)}</span>`).join("")}</div>
+                ${chart.rows.map((r) => `<div class="chart-row" data-chartsize="${esc(r[0])}">${r.map((x) => `<span>${esc(x)}</span>`).join("")}</div>`).join("")}
+              </div>
+            </div></div>` : ""}
+        </div>` : ""}
+
+      <div class="p-in" style="--d:4">
+        <h3 class="sec-title"><span>Описание</span></h3>
+        <p class="p-desc">${esc(p.desc || "")}</p>
+      </div>
+
+      ${p.specs ? `
+        <div class="p-in" style="--d:5">
+          <h3 class="sec-title"><span>Характеристики</span></h3>
+          <div class="kv">${Object.entries(p.specs).map(([k, v]) => `<div class="kv-row"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join("")}</div>
+        </div>` : ""}`;
+
+    $("#pprice").innerHTML = money(p.price);
+    updateSizeUI();
+    pageSync();
+  }
+
+  function updateSizeUI() {
+    $$(".size").forEach((b) => b.classList.toggle("on", b.dataset.size === pageSize));
+    $$("[data-chartsize]").forEach((r) => r.classList.toggle("on", r.dataset.chartsize === pageSize));
+    const l = $("#size-label");
+    if (l) l.textContent = pageSize ? pageSize : "";
+  }
+
+  function openProduct(id) {
+    const p = byId.get(String(id));
+    if (!p || switching) return;
+    pageId = String(id);
+    // если этот товар уже в корзине — сразу выбираем его размер
+    pageSize = hasSizes(p) ? (p.sizes.find((s) => qtyOf(keyOf(p.id, s)) > 0) || "") : "";
+    renderProduct(p);
+    showView("product");
+  }
+
+  function pageAdd(delta) {
+    const key = pageKey();
+    if (!key) {
+      const box = $("#sizes");
+      box.classList.remove("shake"); void box.offsetWidth; box.classList.add("shake");
+      box.scrollIntoView({ behavior: "smooth", block: "center" });
+      toast("Выберите размер");
+      notify("warning");
+      return;
+    }
+    const q = qtyOf(key);
+    if (delta > 0 && q === 0) notify("success"); else haptic("light");
+    setQty(key, q + delta);
   }
 
   /* ============================================================
@@ -290,13 +499,11 @@
     $("#me-name").textContent = name;
     $("#me-user").textContent = tgUser && tgUser.username ? "@" + tgUser.username : (profile.phone || "Данные ниже");
     const av = $("#avatar");
+    const letter = name.trim()[0] ? name.trim()[0].toUpperCase() : "?";
     if (tgUser && tgUser.photo_url) {
       av.innerHTML = `<img src="${esc(tgUser.photo_url)}" alt="">`;
-      const img = $("img", av);
-      img.onerror = () => { av.textContent = name.trim()[0] ? name.trim()[0].toUpperCase() : "?"; };
-    } else {
-      av.textContent = name.trim()[0] ? name.trim()[0].toUpperCase() : "?";
-    }
+      $("img", av).onerror = () => { av.textContent = letter; };
+    } else av.textContent = letter;
   }
 
   /* Стадия заказа. Если бэкенд отдаёт order.stage (0–5) — берём его,
@@ -369,7 +576,7 @@
               <div class="kv-row"><span>Адрес</span><span>${esc(o.customer.address)}</span></div>
             </div>
             <div class="items-mini">
-              ${o.items.map((it) => `<div><span>${esc(it.name)} × ${it.qty}</span><span>${fmt(it.price * it.qty)} ${cur}</span></div>`).join("")}
+              ${o.items.map((it) => `<div><span>${esc(it.name)}${it.size ? " · " + esc(it.size) : ""} × ${it.qty}</span><span>${fmt(it.price * it.qty)} ${cur}</span></div>`).join("")}
               <div><span>Доставка</span><span>${o.deliveryPrice ? fmt(o.deliveryPrice) + " " + cur : "Бесплатно"}</span></div>
             </div>
             <button class="btn ghost copy" data-action="copy-track" data-track="${esc(o.track)}">Скопировать трек-номер</button>
@@ -387,9 +594,8 @@
     cnt.hidden = n === 0;
     cnt.textContent = n;
 
-    const active = orders.filter((o) => stageOf(o) < 5).length;
     $("#st-orders").textContent = n;
-    $("#st-active").textContent = active;
+    $("#st-active").textContent = orders.filter((o) => stageOf(o) < 5).length;
     $("#st-sum").textContent = fmt(orders.reduce((s, o) => s + o.total, 0));
     $("#st-cur").textContent = `потрачено, ${cur}`;
   }
@@ -401,9 +607,8 @@
 
   /* Статусы живут своей жизнью — тихо обновляем, пока открыт профиль */
   setInterval(() => {
-    if (view !== "profile" || !orders.length) return;
-    const changed = orders.some((o) => lastStages.get(o.id) !== stageOf(o));
-    if (changed) { renderOrders(false); notify("success"); }
+    if (view !== "profile" || document.hidden || !orders.length) return;
+    if (orders.some((o) => lastStages.get(o.id) !== stageOf(o))) { renderOrders(false); notify("success"); }
   }, 2500);
 
   /* ============================================================
@@ -438,20 +643,27 @@
      ============================================================ */
   let switching = false;
   function showView(name) {
-    if (name === view || switching || !VIEWS.includes(name)) return;
+    if (name === view || switching || !ORDER.includes(name)) return;
     switching = true;
 
-    const dir = VIEWS.indexOf(name) > VIEWS.indexOf(view) ? 1 : -1;
+    if (name === "product") backTo = view;
+    const dir = ORDER.indexOf(name) > ORDER.indexOf(view) ? 1 : -1;
     const from = $(`#view-${view}`), to = $(`#view-${name}`);
     const y = window.scrollY;
     scrollPos[view] = y;
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 
-    $$(".dock-btn", dock).forEach((b) => b.classList.toggle("active", b.dataset.view === name));
+    if (TABS.includes(name)) $$(".dock-btn", dock).forEach((b) => b.classList.toggle("active", b.dataset.view === name));
+    const isProduct = name === "product";
+    dock.classList.toggle("hide", isProduct);
+    ptop.classList.toggle("show", isProduct);
+    pbar.classList.toggle("show", isProduct);
+    if (tg && tg.BackButton) { try { isProduct ? tg.BackButton.show() : tg.BackButton.hide(); } catch (_) {} }
     haptic("light");
 
     if (name === "cart") renderCart();
     if (name === "profile") renderProfile(true);
+    if (isProduct) scrollPos.product = 0;
 
     // старый экран «замораживаем» на текущем месте и уводим в сторону
     from.classList.remove("intro");
@@ -471,14 +683,18 @@
       from.classList.remove("leaving", "to-left", "to-right");
       to.classList.remove("entering", "from-right", "from-left");
       switching = false;
+      if (name === "shop") observeCards();
     }, 760);
   }
 
-  /* Свайп влево/вправо между экранами */
+  const goBack = () => { if (view === "product") showView(backTo); };
+  if (tg && tg.BackButton) { try { tg.BackButton.onClick(goBack); } catch (_) {} }
+
+  /* Свайп между экранами; на странице товара — свайп вправо от левого края = назад */
   (() => {
     let sx = 0, sy = 0, ok = false;
     document.addEventListener("touchstart", (e) => {
-      ok = !sheetId && !e.target.closest(".chips, input, .sheet-wrap");
+      ok = !e.target.closest(".chips, input, .gallery");
       sx = e.touches[0].clientX; sy = e.touches[0].clientY;
     }, { passive: true });
     document.addEventListener("touchend", (e) => {
@@ -486,66 +702,47 @@
       ok = false;
       const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
       if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.6) return;
-      const next = VIEWS[VIEWS.indexOf(view) + (dx < 0 ? 1 : -1)];
+      if (view === "product") { if (dx > 0 && sx < 50) goBack(); return; }
+      const next = TABS[TABS.indexOf(view) + (dx < 0 ? 1 : -1)];
       if (next) showView(next);
     }, { passive: true });
   })();
 
   /* ============================================================
-     Шторка товара
+     Скролл: размытие у краёв + лёгкий параллакс фона
      ============================================================ */
-  function openSheet(id) {
-    const p = byId.get(String(id));
-    if (!p) return;
-    sheetId = String(id);
-    sheetBody.innerHTML = `
-      <div class="s-in" style="--d:0">${pic(p, 0, "s-pic")}</div>
-      <div class="s-cat s-in" style="--d:1">${esc(p.category || "")}</div>
-      <h2 class="s-name s-in" style="--d:2">${esc(p.name)}</h2>
-      <p class="s-desc s-in" style="--d:3">${esc(p.desc || "")}</p>
-      <div class="s-foot s-in" style="--d:4">
-        <span class="s-price">${money(p.price)}</span>
-        ${qtyControl(p.id, "lg")}
-      </div>`;
-    sheet.scrollTop = 0;
-    sheetWrap.classList.add("open");
-    sheetWrap.setAttribute("aria-hidden", "false");
-    document.body.classList.add("locked");
-    haptic("light");
-    if (tg && tg.BackButton) { try { tg.BackButton.show(); } catch (_) {} }
-  }
-
-  function closeSheet() {
-    if (!sheetId) return;
-    sheetId = null;
-    sheetWrap.classList.remove("open");
-    sheetWrap.setAttribute("aria-hidden", "true");
-    document.body.classList.remove("locked");
-    sheet.style.transform = "";
-    if (tg && tg.BackButton) { try { tg.BackButton.hide(); } catch (_) {} }
-  }
-  if (tg && tg.BackButton) { try { tg.BackButton.onClick(closeSheet); } catch (_) {} }
-
   (() => {
-    let startY = 0, dy = 0, active = false;
-    sheet.addEventListener("touchstart", (e) => {
-      if (sheet.scrollTop > 0) return;
-      startY = e.touches[0].clientY; dy = 0; active = true;
-    }, { passive: true });
-    sheet.addEventListener("touchmove", (e) => {
-      if (!active) return;
-      dy = e.touches[0].clientY - startY;
-      if (dy > 0) {
-        sheet.classList.add("dragging");
-        sheet.style.transform = `translateY(${dy * 0.9}px)`;
-      } else sheet.style.transform = "";
-    }, { passive: true });
-    sheet.addEventListener("touchend", () => {
-      if (!active) return;
-      active = false;
-      sheet.classList.remove("dragging");
-      if (dy > 110) closeSheet(); else sheet.style.transform = "";
-    });
+    const edgeTop = $("#edge-top"), edgeBot = $(".edge-bottom"), par = $("#bg-par");
+    let lastY = window.scrollY, lastT = performance.now();
+    let speed = 0, k = 0, raf = 0;
+
+    const tick = () => {
+      raf = 0;
+      const now = performance.now(), y = window.scrollY;
+      const dt = Math.min(34, Math.max(8, now - lastT));
+      const v = Math.abs(y - lastY) / dt;          // скорость, px/мс
+      lastY = y; lastT = now;
+
+      // быстро нарастает при рывке, медленно затухает после остановки
+      speed = v > speed ? speed * 0.5 + v * 0.5 : speed * 0.9 + v * 0.1;
+      if (speed < 0.02) speed = 0;
+      const nk = Math.min(1, speed / 2.5);
+
+      // обновляем стили только при заметном изменении — не гоняем зря перерисовку
+      if (Math.abs(nk - k) > 0.015 || (nk === 0 && k !== 0)) {
+        k = nk;
+        const val = k.toFixed(2);
+        edgeTop.style.setProperty("--k", val);
+        edgeBot.style.setProperty("--k", val);
+      }
+      // сверху «туман» включается при прокрутке; при быстром движении — сильнее
+      edgeTop.style.opacity = Math.max(Math.min(1, y / 45), k * 0.9).toFixed(2);
+      par.style.transform = `translate3d(0, ${(-y * 0.06).toFixed(1)}px, 0)`;
+
+      if (speed > 0) raf = requestAnimationFrame(tick); // доживаем затухание
+    };
+    window.addEventListener("scroll", () => { if (!raf) raf = requestAnimationFrame(tick); }, { passive: true });
+    tick();
   })();
 
   /* ============================================================
@@ -592,9 +789,10 @@
     return {
       id: num,
       createdAt: Date.now(),
-      items: Object.entries(cart).map(([id, qty]) => {
-        const p = byId.get(id);
-        return { id: p.id, name: p.name, price: p.price, qty, emoji: p.emoji, hue: p.hue, image: p.image };
+      items: Object.entries(cart).map(([key, qty]) => {
+        const { size } = parseKey(key);
+        const p = prodOf(key);
+        return { id: p.id, name: p.name, size, price: p.price, qty, emoji: p.emoji, hue: p.hue, image: covers(p)[0] };
       }),
       itemsSum: sum,
       deliveryId: d.id,
@@ -658,20 +856,22 @@
     const { action, id } = el.dataset;
 
     switch (action) {
-      case "inc":
-        e.stopPropagation();
-        setQty(id, qtyOf(id) + 1);
-        haptic("light");
-        break;
-      case "dec":
-        e.stopPropagation();
-        setQty(id, qtyOf(id) - 1);
-        haptic("light");
-        break;
-      case "open": openSheet(id); break;
-      case "close-sheet": closeSheet(); break;
+      case "inc": setQty(id, qtyOf(id) + 1); haptic("light"); break;
+      case "dec": setQty(id, qtyOf(id) - 1); haptic("light"); break;
+      case "pinc": pageAdd(1); break;
+      case "pdec": pageAdd(-1); break;
+      case "open": openProduct(id); break;
+      case "back": goBack(); break;
+      case "goto-cart": showView("cart"); break;
       case "goto-shop": showView("shop"); break;
       case "checkout": checkout(); break;
+      case "size":
+        pageSize = pageSize === el.dataset.size ? "" : el.dataset.size;
+        updateSizeUI();
+        pageSync();
+        haptic("light");
+        break;
+      case "toggle-chart": $("#chart-wrap").classList.toggle("open"); haptic("light"); break;
       case "delivery":
         if (id === deliveryId) return;
         deliveryId = id;

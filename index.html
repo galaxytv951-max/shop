@@ -4,21 +4,32 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#07070b">
+  <meta name="color-scheme" content="dark">
   <title>Shop</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://telegram.org">
   <link rel="stylesheet" href="css/style.css">
+  <!-- defer: страница рисуется, не дожидаясь скриптов; порядок выполнения сохраняется -->
+  <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script defer src="js/products.js"></script>
+  <script defer src="js/app.js"></script>
 </head>
 <body>
 
   <!-- Фон -->
   <div class="bg" aria-hidden="true">
-    <div class="blob b1"></div>
-    <div class="blob b2"></div>
-    <div class="blob b3"></div>
+    <div class="bg-par" id="bg-par">
+      <div class="blob b1"></div>
+      <div class="blob b2"></div>
+      <div class="blob b3"></div>
+    </div>
     <div class="grid"></div>
     <div class="noise"></div>
     <div class="vignette"></div>
   </div>
+
+  <!-- Размытие у краёв экрана при прокрутке -->
+  <div class="edge edge-top" id="edge-top" aria-hidden="true"></div>
+  <div class="edge edge-bottom" aria-hidden="true"></div>
 
   <main class="app">
 
@@ -115,7 +126,40 @@
       </div>
     </section>
 
+    <!-- СТРАНИЦА ТОВАРА -->
+    <section class="view" id="view-product" hidden>
+      <div class="gal-wrap">
+        <div class="gallery" id="gallery"></div>
+        <div class="dots" id="dots"></div>
+      </div>
+      <div class="pbody" id="pbody"></div>
+    </section>
+
   </main>
+
+  <!-- Верхние кнопки страницы товара -->
+  <div class="ptop" id="ptop">
+    <button class="roundbtn" data-action="back" aria-label="Назад">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <button class="roundbtn" data-action="goto-cart" aria-label="Корзина">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8h12l-1 12H7L6 8z"/><path d="M9 8V7a3 3 0 0 1 6 0v1"/></svg>
+      <i class="fab-badge" id="fab-badge">0</i>
+    </button>
+  </div>
+
+  <!-- Нижняя панель страницы товара -->
+  <div class="pbar" id="pbar">
+    <div class="pbar-price">
+      <b id="pprice"></b>
+      <span id="pinfo"></span>
+    </div>
+    <div class="qty lg" id="pqty">
+      <button class="minus" data-action="pdec" aria-label="Убрать">−</button>
+      <span class="count"></span>
+      <button class="plus" data-action="pinc" aria-label="В корзину">+<span class="label">В корзину</span></button>
+    </div>
+  </div>
 
   <!-- ДОК-НАВИГАЦИЯ -->
   <nav class="dock" id="dock">
@@ -134,18 +178,6 @@
     </button>
   </nav>
 
-  <!-- ШТОРКА ТОВАРА -->
-  <div class="sheet-wrap" id="sheet-wrap" aria-hidden="true">
-    <div class="backdrop" data-action="close-sheet"></div>
-    <div class="sheet" id="sheet">
-      <div class="handle"></div>
-      <div id="sheet-body"></div>
-    </div>
-  </div>
-
   <div class="toast" id="toast"></div>
-
-  <script src="js/products.js"></script>
-  <script src="js/app.js"></script>
 </body>
 </html>
